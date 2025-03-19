@@ -644,14 +644,31 @@ Login with the ansible user, or student user.
 
 Add devices
 
-## Jinja templates 
 
-## Netbox playbooks and scripts
+## Netbox playbooks, jinja templates and scripts
 
-Need to install python modules, check scripts for their dependencies, first script needs these:
+In this section we will prepare a series of playbooks, accompanied with jinja templates and python scripts. We will do all the exercises together, in plenum. This workbook is not considered a complete guide, it needs to be done together with the instructor.\
+
+Previously we configured AVD "statically". Now we are going to update our AVD group_var files and inventory.yml to become a bit more dynamic. Meaning the configuration files in AVD no longer uses static values but get dynamic values from some other input, in this example Netbox. Therefore there are some preparatins we need to do for AVD to handle this.\
+First of is installing some additional pip modules for our coming Python scripts. PS, make sure that the previous pip modules earlier have been installed in our python environment. I will go through that. Below is some additional pip modules that needs to be installed.  
+
+Install the following python modules, (if unsure which check scripts for their dependencies) first script needs these:
 ```bash
 (ci_cd_env) nlab@nlab-101:~/ci_cd_1/single-dc-l3ls/scripts$ pip install pynetbox requests colorama ipaddress
 ```
+
+All the playbooks depend on the netbox_env.sh file with the following content:
+```bash
+# netbox_env.sh
+export NETBOX_URL="http://localhost"
+export NETBOX_TOKEN="3388e839465c444ddce04c69a9968fd63473a251"
+export CVP_HOST="94.26.25.51"
+export CVP_USER="ansible"
+export CVP_PASSWORD="nlabpassword"
+```
+Update accordingly. This file is placed in the root of your avd repo single-dc-l3ls folder.
+
+Next up is some preparations in Netbox. This can be done two ways, via the Netbox ui or via a script. 
 
 To prepare Netbox for the first import:
 1. Add device roles: l3leaf, l2leaf and spine
@@ -662,8 +679,9 @@ To prepare Netbox for the first import:
 
 Or just run script called 01-create-basic-device.py
 
+The scripts are found in this repo. Again, we will go through these together in plenum - step by step.\
 
-Remove unwanted structured config files here:
+Earlier we did delete the folders "documentation" and "intended". If this has not been done, make sure we have deleted  unwanted structured config files here (all files not starting with our famous "STx" prefix)::
 ```bash
 (ci_cd_env) nlab@nlab-101:~/ci_cd_1/single-dc-l3ls/intended$ cd structured_configs/
 (ci_cd_env) nlab@nlab-101:~/ci_cd_1/single-dc-l3ls/intended/structured_configs$ ls
@@ -689,6 +707,131 @@ drwxrwxr-x 2 nlab nlab  4096 Mar 11 09:48 cvp/
 -rw-rw-r-- 1 nlab nlab  4967 Mar 11 11:38 st1-dc1-spine1.yml
 -rw-rw-r-- 1 nlab nlab  4969 Mar 11 11:38 st1-dc1-spine2.yml
 ```
+
+The scripts are either copy paste from this git repo, or the whole repo is cloned by using the following command:
+```bash
+git clone git@github.com:andreasm80/arista-automation-workshop.git
+```
+Note that this will create a folder automatically based on the name of the repository.\
+My recommendation is to go to your home folder, then run the command above. From there we can copy the scripts as needed.\
+
+I have create a script that prompts for certain needed fields to be updated in some of the templates. Again this is our popular STx prefixes. Even after this script has run, we still need the template with some minor changes as the script is not clever enough to take it all. We will go through that. Below is the script, it will also be located in the avd_playbooks/templates folder in this repo:
+```bash
+#!/usr/bin/env python3
+import sys
+import re
+
+def read_template(filename):
+    """Read the template file and return its contents."""
+    try:
+        with open(filename, 'r') as f:
+            return f.read()
+    except FileNotFoundError:
+        print(f"Error: File '{filename}' not found")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        sys.exit(1)
+
+def find_group_matches(template_content, base_groups):
+    """Find full group names that end with the base group names, allowing any prefix."""
+    group_matches = {}
+    for group in base_groups:
+        # Match any prefix followed by the exact group name as a whole word
+        pattern = rf'\b\w*_{re.escape(group)}\b|\b{re.escape(group)}\b'
+        matches = set(re.findall(pattern, template_content))
+        # Include only matches that end with the base group name
+        full_matches = {match for match in matches if match.endswith(group)}
+        if full_matches:
+            group_matches[group] = full_matches
+        else:
+            group_matches[group] = {group}  # Default to original if no matches
+    return group_matches
+
+def find_mgmt_gateway(template_content):
+    """Find the mgmt_gateway line and its current value."""
+    pattern = r'mgmt_gateway:\s*(\S+)'
+    match = re.search(pattern, template_content)
+    if match:
+        return match.group(0), match.group(1)  # Full line, current IP
+    return None, None
+
+def main():
+    # Check if filename is provided
+    if len(sys.argv) != 2:
+        print("Usage: python script.py <template_filename>")
+        sys.exit(1)
+
+    filename = sys.argv[1]
+
+    # Read the original template
+    original_template = read_template(filename)
+
+    # Print the original template for debugging
+    print("Original template:")
+    print("-" * 50)
+    print(original_template)
+    print("-" * 50)
+
+    # Base group names to look for
+    base_groups = ["FABRIC", "DC1", "DC1_SPINES", "DC1_L3_LEAVES", "DC1_L2_LEAVES", "DC1_L3_LEAF", "DC1_L2_LEAF"]
+
+    # Find all matching group names in the template
+    group_matches = find_group_matches(original_template, base_groups)
+
+    # Dictionary to store replacements
+    replacements = {}
+
+    # Prompt for new group names
+    print("Enter new names for each group (press Enter to keep original name):")
+    for base_group, matched_groups in group_matches.items():
+        print(f"\nFound these variations for {base_group}: {', '.join(matched_groups)}")
+        for matched_group in matched_groups:
+            new_name = input(f"New name for {matched_group} [{matched_group}]: ").strip()
+            if new_name:
+                replacements[matched_group] = new_name
+
+    # Prompt for new mgmt_gateway IP
+    mgmt_gateway_line, current_ip = find_mgmt_gateway(original_template)
+    if mgmt_gateway_line:
+        new_ip = input(f"\nFound mgmt_gateway: {current_ip}. Enter new IP address [{current_ip}]: ").strip()
+        if new_ip:
+            replacements[mgmt_gateway_line] = f"mgmt_gateway: {new_ip}"
+
+    # Create the modified template with exact replacements
+    modified_template = original_template
+    for old_name, new_name in replacements.items():
+        pattern = rf'\b{re.escape(old_name)}\b'
+        modified_template = re.sub(pattern, new_name, modified_template)
+
+    # Print the modified template
+    print("\nModified template:")
+    print("-" * 50)
+    print(modified_template)
+
+    # Optionally save to file
+    save = input("\nWould you like to save this to a file? (y/n): ").lower()
+    if save == 'y':
+        output_filename = input("Enter output filename: ")
+        try:
+            with open(output_filename, 'w') as f:
+                f.write(modified_template)
+            print(f"Template saved to {output_filename}")
+        except Exception as e:
+            print(f"Error saving file: {e}")
+
+if __name__ == "__main__":
+    main()
+```
+
+This script is excecuted against our two jinja templates: "inventory.yml.j2" and "update_dc1.j2". 
+This is the way to run the script:
+
+```bash
+python rename_avd_constucts.py inventory.yml.j2
+python rename_avd_constucts.py update_dc1.j2
+```
+ 
 
 Run first script to import all configured eos devices by AVD:\
 1-import_devices_from_structured_config.py
