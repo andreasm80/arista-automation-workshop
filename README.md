@@ -618,7 +618,7 @@ And finally the build.yml playbook itself:
         name: arista.avd.eos_cli_config_gen
 ```
 
-And the deploy-cvp.ympl playbook:
+And the deploy-cvp.yml playbook:
 ```yaml
 ---
 - name: Deploy Configurations to Devices Using CloudVision Portal # (1)!
